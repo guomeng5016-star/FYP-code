@@ -1,0 +1,1765 @@
+---
+title: "FYP final"
+output: html_document
+date: "2025-11-12"
+---
+
+
+elbow图确定分类
+```{r}
+A0<-read.csv("D:/HuaweiMoveData/Users/86133/Desktop/FYP数据（自己）/edgeR_CPM_Normalized_Counts_CD49f_CD133.csv",header = T)
+
+#clean_data <- mydata[complete.cases(A), ]
+
+#library(readxl)
+#library(dplyr)
+#library(openxlsx)
+# Read the Excel files
+#file1 <- read_excel("file1.xlsx")
+
+A<-na.omit(A0)
+A<-A[,-1:-4]
+A<-as.matrix(A)
+I<-A=="0"
+# Compute k-means clustering for different values of k
+wcss <- numeric(15)  #within-cluster sum of squares
+for (i in 1:10) {
+  kmeans_result <- kmeans(A, centers=i)
+  wcss[i] <- kmeans_result$tot.withinss
+}
+# Plot the elbow curve
+plot(1:15, wcss, type='b', pch=19, frame=FALSE, 
+     xlab='Number of clusters', ylab='WCSS', main='Elbow Method')
+# Add a line at the "elbow" point
+#segments(x0=11, y0=min(wcss), x1=11, y1=max(wcss), lty=2, col='red')
+
+```
+
+pca+t-sne+k-means
+```{r}
+library(Rtsne)
+library(ggplot2)
+library(RColorBrewer)
+
+# -----------------------------
+# 1. 读取数据 & 预处理
+# -----------------------------
+A0 <- read.csv("D:/HuaweiMoveData/Users/86133/Desktop/FYP数据（自己）/edgeR_CPM_Normalized_Counts_CD49f_CD133.csv", header = TRUE)
+
+# 去掉 NA
+data_clean <- na.omit(A0)
+
+# 去掉样本名列（假设是第一列）
+data_expr <- data_clean[, -1]
+
+# 选取前2000个样本（不足则全选）
+n <- min(2000, nrow(data_expr))
+data_expr_subset <- data_expr[1:n, ]
+
+# 转矩阵
+A <- as.matrix(data_expr_subset)
+
+# -----------------------------
+# 2. PCA 降维（降到最多50维，避免下标越界）
+# -----------------------------
+pca_res <- prcomp(A, scale. = TRUE)
+num_pc <- min(50, ncol(pca_res$x))  # 防止样本数/特征数不足
+A_pca <- pca_res$x[, 1:num_pc]
+
+# -----------------------------
+# 3. 去重（t-SNE 不允许重复行）
+# -----------------------------
+unique_idx <- !duplicated(A_pca)
+A_pca_unique <- A_pca[unique_idx, ]
+
+# -----------------------------
+# 4. t-SNE 降维到二维
+# -----------------------------
+set.seed(42)
+perplexity <- 20
+tsne_res <- Rtsne(A_pca_unique, perplexity = perplexity, dims = 2)
+tsne_data <- tsne_res$Y
+
+# -----------------------------
+# 5. K-means 聚类（在 t-SNE 坐标上）
+# -----------------------------
+set.seed(42)
+k <- 5
+km <- kmeans(tsne_data, centers = k)
+clusters <- km$cluster
+
+# -----------------------------
+# 6. 整理成 data.frame 并可视化
+# -----------------------------
+tsne_df <- data.frame(
+  X = tsne_data[,1],
+  Y = tsne_data[,2],
+  Cluster = factor(clusters)
+)
+
+custom_colors <- rainbow(k)
+ggplot(tsne_df, aes(x = X, y = Y, color = Cluster)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = custom_colors) +
+  theme_minimal() +
+  ggtitle(paste("PCA → t-SNE → K-means 聚类 (perplexity =", perplexity, ", k =", k, ")"))
+
+
+
+# 1. 找到 PCA 去重后的索引对应原始数据
+unique_idx <- which(!duplicated(A_pca))
+data_expr_unique <- data_expr_subset[unique_idx, ]  # 原始表达矩阵对应去重后的行
+
+# 2. 将 cluster 信息加到原始数据
+data_with_cluster <- data.frame(data_expr_unique, Cluster = clusters)
+
+# 3. 按簇提取数据并单独保存到 Excel
+for (i in 1:k){
+  cluster_data <- data_with_cluster %>%
+    filter(Cluster == i) %>%
+    select(-Cluster)  # 只保留原始基因数据
+  
+  # 保存为单独的 Excel 文件
+  file_name <- paste0("cluster", i, "perplexity20_full_data.xlsx")
+  wb <- createWorkbook()
+  addWorksheet(wb, paste0("Cluster", i))
+  writeData(wb, sheet = 1, cluster_data)
+  saveWorkbook(wb, file_name, overwrite = TRUE)
+}
+
+```
+
+perplexities=10, 20, 30, 40
+k=3
+```{r}
+library(Rtsne)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)  # 用于网格展示
+
+# -----------------------------
+# 1. 读取数据 & 预处理
+# -----------------------------
+A0 <- read.csv("D:/HuaweiMoveData/Users/86133/Desktop/FYP数据（自己）/edgeR_CPM_Normalized_Counts_CD49f_CD133.csv", header = TRUE)
+data_clean <- na.omit(A0)
+data_expr <- data_clean[, -1]  # 假设第一列是样本名
+n <- min(2000, nrow(data_expr))
+data_expr_subset <- data_expr[1:n, ]
+A <- as.matrix(data_expr_subset)
+
+# -----------------------------
+# 2. PCA 降维（最多50维）
+# -----------------------------
+pca_res <- prcomp(A, scale. = TRUE)
+num_pc <- min(50, ncol(pca_res$x))
+A_pca <- pca_res$x[, 1:num_pc]
+
+# -----------------------------
+# 3. 去重
+# -----------------------------
+unique_idx <- !duplicated(A_pca)
+A_pca_unique <- A_pca[unique_idx, ]
+
+# -----------------------------
+# 4. 循环 t-SNE + K-means 不同 perplexity
+# -----------------------------
+perplexities <- c(10, 20, 30, 40)
+k <- 3
+custom_colors <- rainbow(k)
+plots <- list()  # 存储每个 perplexity 的图
+
+for (p in perplexities){
+  set.seed(42)
+  tsne_res <- Rtsne(A_pca_unique, perplexity = p, dims = 2, check_duplicates = FALSE, verbose = FALSE)
+  tsne_data <- tsne_res$Y
+  
+  set.seed(42)
+  km <- kmeans(tsne_data, centers = k)
+  
+  tsne_df <- data.frame(
+    X = tsne_data[,1],
+    Y = tsne_data[,2],
+    Cluster = factor(km$cluster)
+  )
+  
+  # 绘图
+  plots[[as.character(p)]] <- ggplot(tsne_df, aes(x = X, y = Y, color = Cluster)) +
+    geom_point(size = 2, alpha = 0.8) +
+    scale_color_manual(values = custom_colors) +
+    theme_minimal() +
+    ggtitle(paste("t-SNE → K-means (perplexity =", p, ", k =", k, ")")) +
+    theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+}
+
+# -----------------------------
+# 5. 网格展示 2x2
+# -----------------------------
+grid.arrange(grobs = plots, nrow = 2, ncol = 2)
+```
+
+
+perplexities=10, 20, 30, 40
+k=4
+```{r}
+library(Rtsne)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)  # 用于网格展示
+
+# -----------------------------
+# 1. 读取数据 & 预处理
+# -----------------------------
+A0 <- read.csv("D:/HuaweiMoveData/Users/86133/Desktop/FYP数据（自己）/edgeR_CPM_Normalized_Counts_CD49f_CD133.csv", header = TRUE)
+data_clean <- na.omit(A0)
+data_expr <- data_clean[, -1]  # 假设第一列是样本名
+n <- min(2000, nrow(data_expr))
+data_expr_subset <- data_expr[1:n, ]
+A <- as.matrix(data_expr_subset)
+
+# -----------------------------
+# 2. PCA 降维（最多50维）
+# -----------------------------
+pca_res <- prcomp(A, scale. = TRUE)
+num_pc <- min(50, ncol(pca_res$x))
+A_pca <- pca_res$x[, 1:num_pc]
+
+# -----------------------------
+# 3. 去重
+# -----------------------------
+unique_idx <- !duplicated(A_pca)
+A_pca_unique <- A_pca[unique_idx, ]
+
+# -----------------------------
+# 4. 循环 t-SNE + K-means 不同 perplexity
+# -----------------------------
+perplexities <- c(10, 20, 30, 40)
+k <- 4
+custom_colors <- rainbow(k)
+plots <- list()  # 存储每个 perplexity 的图
+
+for (p in perplexities){
+  set.seed(42)
+  tsne_res <- Rtsne(A_pca_unique, perplexity = p, dims = 2, check_duplicates = FALSE, verbose = FALSE)
+  tsne_data <- tsne_res$Y
+  
+  set.seed(42)
+  km <- kmeans(tsne_data, centers = k)
+  
+  tsne_df <- data.frame(
+    X = tsne_data[,1],
+    Y = tsne_data[,2],
+    Cluster = factor(km$cluster)
+  )
+  
+  # 绘图
+  plots[[as.character(p)]] <- ggplot(tsne_df, aes(x = X, y = Y, color = Cluster)) +
+    geom_point(size = 2, alpha = 0.8) +
+    scale_color_manual(values = custom_colors) +
+    theme_minimal() +
+    ggtitle(paste("PCA+t-SNE (perplexity =", p, ", k =", k, ")")) +
+    theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+}
+
+# -----------------------------
+# 5. 网格展示 2x2
+# -----------------------------
+grid.arrange(grobs = plots, nrow = 2, ncol = 2)
+```
+
+
+
+perplexities=10, 20, 30, 40
+k=5
+```{r}
+library(Rtsne)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)  # 用于网格展示
+
+# -----------------------------
+# 1. 读取数据 & 预处理
+# -----------------------------
+A0 <- read.csv("D:/HuaweiMoveData/Users/86133/Desktop/FYP数据（自己）/edgeR_CPM_Normalized_Counts_CD49f_CD133.csv", header = TRUE)
+data_clean <- na.omit(A0)
+data_expr <- data_clean[, -1]  # 假设第一列是样本名
+n <- min(2000, nrow(data_expr))
+data_expr_subset <- data_expr[1:n, ]
+A <- as.matrix(data_expr_subset)
+
+# -----------------------------
+# 2. PCA 降维（最多50维）
+# -----------------------------
+pca_res <- prcomp(A, scale. = TRUE)
+num_pc <- min(50, ncol(pca_res$x))
+A_pca <- pca_res$x[, 1:num_pc]
+
+# -----------------------------
+# 3. 去重
+# -----------------------------
+unique_idx <- !duplicated(A_pca)
+A_pca_unique <- A_pca[unique_idx, ]
+
+# -----------------------------
+# 4. 循环 t-SNE + K-means 不同 perplexity
+# -----------------------------
+perplexities <- c(10, 20, 30, 40)
+k <- 5
+custom_colors <- rainbow(k)
+plots <- list()  # 存储每个 perplexity 的图
+
+for (p in perplexities){
+  set.seed(42)
+  tsne_res <- Rtsne(A_pca_unique, perplexity = p, dims = 2, check_duplicates = FALSE, verbose = FALSE)
+  tsne_data <- tsne_res$Y
+  
+  set.seed(42)
+  km <- kmeans(tsne_data, centers = k)
+  
+  tsne_df <- data.frame(
+    X = tsne_data[,1],
+    Y = tsne_data[,2],
+    Cluster = factor(km$cluster)
+  )
+  
+  # 绘图
+  plots[[as.character(p)]] <- ggplot(tsne_df, aes(x = X, y = Y, color = Cluster)) +
+    geom_point(size = 2, alpha = 0.8) +
+    scale_color_manual(values = custom_colors) +
+    theme_minimal() +
+    ggtitle(paste("PCA+t-SNE (perplexity =", p, ", k =", k, ")")) +
+    theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+}
+
+# -----------------------------
+# 5. 网格展示 2x2
+# -----------------------------
+grid.arrange(grobs = plots, nrow = 2, ncol = 2)
+```
+
+
+
+K=5 perplexity=10 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 10/cluster1perplexity10_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 10/cluster2perplexity10_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 10/cluster3perplexity10_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 10/cluster4perplexity10_full_data.xlsx")
+A5 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 10/cluster5perplexity10_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+A5<-as.matrix(A5)
+X<-rbind(A1,A2,A3,A4,A5)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+d5<-dim(A5)
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+n5<-d5[1]
+n<-sum(c(n1,n2,n3,n4,n5))
+
+k<-5
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
++t(A5)%*%(diag(rep(1,n5))-1/n5*matrix(1,ncol = n5,nrow = n5))%*%A5
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F5_total10_k5<--(n-1-(p+k)/2)*Ls
+pv5_total10_k5<-pchisq(F5_total10_k5,p*(k-1),lower.tail = FALSE)
+F5_total10_k5
+pv5_total10_k5
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total10_k5<-round(c(F1,F2,F3,F4),4)
+pv_total10_k5<-c(pv1,pv2,pv3,pv4)
+
+F_total10_k5
+pv_total10_k5
+
+```
+
+K=5 perplexity=20 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 20/cluster1perplexity20_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 20/cluster2perplexity20_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 20/cluster3perplexity20_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 20/cluster4perplexity20_full_data.xlsx")
+A5 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 20/cluster5perplexity20_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+A5<-as.matrix(A5)
+X<-rbind(A1,A2,A3,A4,A5)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+d5<-dim(A5)
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+n5<-d5[1]
+n<-sum(c(n1,n2,n3,n4,n5))
+
+k<-5
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
++t(A5)%*%(diag(rep(1,n5))-1/n5*matrix(1,ncol = n5,nrow = n5))%*%A5
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F5_total20_k5<--(n-1-(p+k)/2)*Ls
+pv5_total20_k5<-pchisq(F5_total20_k5,p*(k-1),lower.tail = FALSE)
+F5_total20_k5
+pv5_total20_k5
+
+#project F-text
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total20_k5<-round(c(F1,F2,F3,F4),4)
+pv_total20_k5<-c(pv1,pv2,pv3,pv4)
+
+F_total20_k5
+pv_total20_k5
+```
+
+
+K=5 perplexity=30 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 30/perplexity30cluster1_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 30/perplexity30cluster2_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 30/perplexity30cluster3_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 30/perplexity30cluster4_full_data.xlsx")
+A5 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 30/perplexity30cluster5_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+A5<-as.matrix(A5)
+X<-rbind(A1,A2,A3,A4,A5)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+d5<-dim(A5)
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+n5<-d5[1]
+n<-sum(c(n1,n2,n3,n4,n5))
+
+k<-5
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
++t(A5)%*%(diag(rep(1,n5))-1/n5*matrix(1,ncol = n5,nrow = n5))%*%A5
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F5_total30_k5<--(n-1-(p+k)/2)*Ls
+pv5_total30_k5<-pchisq(F5_total30_k5,p*(k-1),lower.tail = FALSE)
+F5_total30_k5
+pv5_total30_k5
+
+#project F-text
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total30_k5<-round(c(F1,F2,F3,F4),4)
+pv_total30_k5<-c(pv1,pv2,pv3,pv4)
+
+F_total30_k5
+pv_total30_k5
+
+```
+
+
+K=5 perplexity=40 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 40/cluster1perplexity40_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 40/cluster2perplexity40_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 40/cluster3perplexity40_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 40/cluster4perplexity40_full_data.xlsx")
+A5 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=5 perplexity 40/cluster5perplexity40_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+A5<-as.matrix(A5)
+X<-rbind(A1,A2,A3,A4,A5)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+d5<-dim(A5)
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+n5<-d5[1]
+n<-sum(c(n1,n2,n3,n4,n5))
+
+k<-5
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
++t(A5)%*%(diag(rep(1,n5))-1/n5*matrix(1,ncol = n5,nrow = n5))%*%A5
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F5_total40_k5<--(n-1-(p+k)/2)*Ls
+pv5_total40_k5<-pchisq(F5_total40_k5,p*(k-1),lower.tail = FALSE)
+F5_total40_k5
+pv5_total40_k5
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total40_k5<-round(c(F1,F2,F3,F4),4)
+pv_total40_k5<-c(pv1,pv2,pv3,pv4)
+
+F_total40_k5
+pv_total40_k5
+```
+
+
+K=3 perplexity=10 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 10/cluster1perplexity10_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 10/cluster2perplexity10_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 10/cluster3perplexity10_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+X<-rbind(A1,A2,A3)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+
+n<-sum(c(n1,n2,n3))
+
+k<-3
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F3_total10_k3<--(n-1-(p+k)/2)*Ls
+pv3_total10_k3<-pchisq(F3_total10_k3,p*(k-1),lower.tail = FALSE)
+F3_total10_k3
+pv3_total10_k3
+
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total10_k3<-round(c(F1,F2,F3,F4),2)
+pv_total10_k3<-c(pv1,pv2,pv3,pv4)
+
+F_total10_k3
+pv_total10_k3
+
+
+```
+
+K=3 perplexity=20 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 20/cluster1perplexity20_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 20/cluster2perplexity20_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 20/cluster3perplexity20_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+X<-rbind(A1,A2,A3)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+
+n<-sum(c(n1,n2,n3))
+
+k<-3
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F3_total20_k3<--(n-1-(p+k)/2)*Ls
+pv3_total20_k3<-pchisq(F3_total20_k3,p*(k-1),lower.tail = FALSE)
+F3_total20_k3
+pv3_total20_k3
+
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total20_k3<-round(c(F1,F2,F3,F4),2)
+pv_total20_k3<-c(pv1,pv2,pv3,pv4)
+
+F_total20_k3
+pv_total20_k3
+
+```
+
+
+K=3 perplexity=30 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 30/cluster1perplexity30_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 30/cluster2perplexity30_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 30/cluster3perplexity30_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+X<-rbind(A1,A2,A3)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+
+n<-sum(c(n1,n2,n3))
+
+k<-3
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F3_total30_k3<--(n-1-(p+k)/2)*Ls
+pv3_total30_k3<-pchisq(F3_total30_k3,p*(k-1),lower.tail = FALSE)
+F3_total30_k3
+pv3_total30_k3
+
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total30_k3<-round(c(F1,F2,F3,F4),2)
+pv_total30_k3<-c(pv1,pv2,pv3,pv4)
+
+F_total30_k3
+pv_total30_k3
+
+```
+
+
+K=3 perplexity=40 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 40/cluster1perplexity40_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 40/cluster2perplexity40_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=3 perplexity 40/cluster3perplexity40_full_data.xlsx")
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+X<-rbind(A1,A2,A3)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+
+n<-sum(c(n1,n2,n3))
+
+k<-3
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F3_total40_k3<--(n-1-(p+k)/2)*Ls
+pv3_total40_k3<-pchisq(F3_total40_k3,p*(k-1),lower.tail = FALSE)
+F3_total40_k3
+pv3_total40_k3
+
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total40_k3<-round(c(F1,F2,F3,F4),2)
+pv_total40_k3<-c(pv1,pv2,pv3,pv4)
+
+F_total40_k3
+pv_total40_k3
+
+```
+
+
+K=4 perplexity=10 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 10/cluster1perplexity10_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 10/cluster2perplexity10_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 10/cluster3perplexity10_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 10/cluster4perplexity10_full_data.xlsx")
+
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+
+X<-rbind(A1,A2,A3,A4)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+
+n<-sum(c(n1,n2,n3,n4))
+
+k<-4
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F4_total10_k4<--(n-1-(p+k)/2)*Ls
+pv4_total10_k4<-pchisq(F4_total10_k4,p*(k-1),lower.tail = FALSE)
+F4_total10_k4
+pv4_total10_k4
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total10_k4<-round(c(F1,F2,F3,F4),3)
+pv_total10_k4<-c(pv1,pv2,pv3,pv4)
+
+F_total10_k4
+pv_total10_k4
+```
+
+K=4 perplexity=20 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 20/cluster1perplexity20_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 20/cluster2perplexity20_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 20/cluster3perplexity20_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 20/cluster4perplexity20_full_data.xlsx")
+
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+
+X<-rbind(A1,A2,A3,A4)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+
+n<-sum(c(n1,n2,n3,n4))
+
+k<-4
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F4_total20_k4<--(n-1-(p+k)/2)*Ls
+pv4_total20_k4<-pchisq(F4_total20_k4,p*(k-1),lower.tail = FALSE)
+F4_total20_k4
+pv4_total20_k4
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total20_k4<-round(c(F1,F2,F3,F4),3)
+pv_total20_k4<-c(pv1,pv2,pv3,pv4)
+
+F_total20_k4
+pv_total20_k4
+```
+
+K=4 perplexity=30 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 30/cluster1perplexity30_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 30/cluster2perplexity30_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 30/cluster3perplexity30_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 30/cluster4perplexity30_full_data.xlsx")
+
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+
+X<-rbind(A1,A2,A3,A4)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+
+n<-sum(c(n1,n2,n3,n4))
+
+k<-4
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F4_total30_k4<--(n-1-(p+k)/2)*Ls
+pv4_total30_k4<-pchisq(F4_total30_k4,p*(k-1),lower.tail = FALSE)
+F4_total30_k4
+pv4_total30_k4
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total30_k4<-round(c(F1,F2,F3,F4),3)
+pv_total30_k4<-c(pv1,pv2,pv3,pv4)
+
+F_total30_k4
+pv_total30_k4
+```
+
+K=4 perplexity=40 F PV
+```{r}
+library(readxl)
+library(dplyr)
+library(openxlsx)
+# Read the Excel files
+
+A1 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 40/cluster1perplexity40_full_data.xlsx")
+A2 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 40/cluster2perplexity40_full_data.xlsx")
+A3 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 40/cluster3perplexity40_full_data.xlsx")
+A4 <- read_excel("D:/HuaweiMoveData/Users/86133/Desktop/k=4 perplexity 40/cluster4perplexity40_full_data.xlsx")
+
+
+A1<-as.matrix(A1)
+A2<-as.matrix(A2)
+A3<-as.matrix(A3)
+A4<-as.matrix(A4)
+
+X<-rbind(A1,A2,A3,A4)
+
+d1<-dim(A1)
+d2<-dim(A2)
+d3<-dim(A3)
+d4<-dim(A4)
+
+n1<-d1[1]
+n2<-d2[1]
+n3<-d3[1]
+n4<-d4[1]
+
+n<-sum(c(n1,n2,n3,n4))
+
+k<-4
+p<-d1[2]
+
+SSW<-t(A1)%*%(diag(rep(1,n1))-1/n1*matrix(1,ncol = n1,nrow = n1))%*%A1
++t(A2)%*%(diag(rep(1,n2))-1/n2*matrix(1,ncol = n2,nrow = n2))%*%A2
++t(A3)%*%(diag(rep(1,n3))-1/n3*matrix(1,ncol = n3,nrow = n3))%*%A3
++t(A4)%*%(diag(rep(1,n4))-1/n4*matrix(1,ncol = n4,nrow = n4))%*%A4
+
+SST<-t(X)%*%(diag(rep(1,n))-1/n*matrix(1,ncol = n,nrow = n))%*%X
+Ls<-log(det(SSW)/det(SST))
+F4_total40_k4<--(n-1-(p+k)/2)*Ls
+pv4_total40_k4<-pchisq(F4_total40_k4,p*(k-1),lower.tail = FALSE)
+F4_total40_k4
+pv4_total40_k4
+
+#project F-test
+r<-min(n-1,p)-1
+r1<-floor(r/4);
+r2<-floor(r/3);
+r3<-floor(r/2);
+r4<-floor(3*r/4);
+
+a<-matrix(0,ncol=n-1,nrow = n)
+for (j in 1:(n-1)){
+  a[j+1,j]<--j/sqrt((j+1)*j)
+  for (l in 1:j) {
+    a[l,j]<-1/sqrt((j+1)*j)
+  }
+}
+  
+Y<-t(a)%*%X
+    W<-t(Y)%*%Y/(n-1)
+E<-eigen(t(W)%*%W)
+D<-E$vectors
+L<-E$values
+
+Z1<-Y%*%D[,1:r1]
+Z2<-Y%*%D[,1:r2]
+Z3<-Y%*%D[,1:r3]
+Z4<-Y%*%D[,1:r4]
+
+r<-r1
+V<-Z1
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F1<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv1<-pf(F1,r,n-1-r,lower.tail = FALSE)
+
+r<-r2
+V<-Z2
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F2<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv2<-pf(F2,r,n-1-r,lower.tail = FALSE)
+
+r<-r3
+V<-Z3
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F3<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv3<-pf(F3,r,n-1-r,lower.tail = FALSE)
+
+r<-r4
+V<-Z4
+H<-t(V)%*%matrix(1,ncol = n-1,nrow = n-1)%*%V/(n-1)
+G<-t(V)%*%(diag(rep(1,n-1))-1/(n-1)*matrix(1,ncol = n-1,nrow = n-1))%*%V
+u<-matrix(rep(1,n-1),ncol=1)
+F4<-(n-1-r)/((n-1)*r)*t(u)%*%V%*%solve(G)%*%t(V)%*%u
+pv4<-pf(F4,r,n-1-r,lower.tail = FALSE)
+
+F_total40_k4<-round(c(F1,F2,F3,F4),3)
+pv_total40_k4<-c(pv1,pv2,pv3,pv4)
+
+F_total40_k4
+pv_total40_k4
+```
+
+```{r}
+# ==========================
+# ✅ Step 1. 准备参数
+# ==========================
+library(openxlsx)
+
+# 定义函数：生成单个表格
+make_table <- function(F_values, pv_values, k, comp, p = 29) {
+  # 固定的 r 和自由度
+  r_values <- c(5, 7, 10, 15)
+  df1 <- c(7, 9, 14, 21)
+  df2 <- c(1990, 1988, 1985, 1980)
+  
+  # 前四行：Projected F-test
+  table <- data.frame(
+    "Projection dimension r" = paste0("r", 1:4, "=", r_values),
+    "Projected F-distribution" = paste0("F(", df1, ", ", df2, ")"),
+    "Projected F-value" = round(F_values[1:4], 4),
+    "p-value" = format(pv_values[1:4], scientific = TRUE)
+  )
+  
+  # 第五行：Wilks test
+  wilks_row <- data.frame(
+    "Projection dimension r" = "Wilks’ test",
+    "Projected F-distribution" = paste0("χ²(", 87, ")"),
+    "Projected F-value" = round(F_values[5], 4),
+    "p-value" = format(pv_values[5], scientific = TRUE)
+  )
+  
+  # 合并
+  out <- rbind(table, wilks_row)
+  out$Complexity <- paste0("Complexity=", comp)
+  out$k <- paste0("k=", k)
+  out
+}
+
+# ==========================
+# ✅ Step 2. 生成结果（示例数据）
+# ==========================
+# ⚠️ 你要在这里替换为你自己的结果向量
+# 例如：F_total10_k3 <- c(...)
+
+
+# ==========================
+# ✅ Step 3. 生成所有表格
+# ==========================
+# k = 3
+result_k3 <- rbind(
+  make_table(F_total10_k3, pv_total10_k3, 3, 10),
+  make_table(F_total20_k3, pv_total20_k3, 3, 20),
+  make_table(F_total30_k3, pv_total30_k3, 3, 30),
+  make_table(F_total40_k3, pv_total40_k3, 3, 40)
+)
+
+# k = 4
+result_k4 <- rbind(
+  make_table(F_total10_k4, pv_total10_k4, 4, 10),
+  make_table(F_total20_k4, pv_total20_k4, 4, 20),
+  make_table(F_total30_k4, pv_total30_k4, 4, 30),
+  make_table(F_total40_k4, pv_total40_k4, 4, 40)
+)
+
+# k = 5
+result_k5 <- rbind(
+  make_table(F_total10_k5, pv_total10_k5, 5, 10),
+  make_table(F_total20_k5, pv_total20_k5, 5, 20),
+  make_table(F_total30_k5, pv_total30_k5, 5, 30),
+  make_table(F_total40_k5, pv_total40_k5, 5, 40)
+)
+
+# ==========================
+# ✅ Step 4. 输出与保存
+# ==========================
+print("==== k = 3 ====")
+print(result_k3, row.names = FALSE)
+
+print("==== k = 4 ====")
+print(result_k4, row.names = FALSE)
+
+print("==== k = 5 ====")
+print(result_k5, row.names = FALSE)
+
+# （可选）保存为 Excel 文件
+write.xlsx(list(k3 = result_k3, k4 = result_k4, k5 = result_k5),
+           file = "Projection_F_test_results.xlsx")
+
+```
+
