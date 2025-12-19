@@ -1,0 +1,357 @@
+---
+title: "fyp代码1"
+output: html_document
+date: "2025-10-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+elbow图确定分类
+```{r}
+A0<-read.csv("edgeR_CPM_Normalized_Counts_CD49f_CD133.csv",header = T)
+#clean_data <- mydata[complete.cases(A), ]
+
+#library(readxl)
+#library(dplyr)
+#library(openxlsx)
+# Read the Excel files
+#file1 <- read_excel("file1.xlsx")
+
+A<-na.omit(A0)
+A<-A[,-1:-4]
+A<-as.matrix(A)
+I<-A=="0"
+# Compute k-means clustering for different values of k
+wcss <- numeric(15)  #within-cluster sum of squares
+for (i in 1:10) {
+  kmeans_result <- kmeans(A, centers=i)
+  wcss[i] <- kmeans_result$tot.withinss
+}
+# Plot the elbow curve
+plot(1:15, wcss, type='b', pch=19, frame=FALSE, 
+     xlab='Number of clusters', ylab='WCSS', main='Elbow Method')
+# Add a line at the "elbow" point
+#segments(x0=11, y0=min(wcss), x1=11, y1=max(wcss), lty=2, col='red')
+
+```
+
+
+
+```{r}
+library(Rtsne)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+
+# 7. K-means 聚类（高维，固定一套 cluster）
+set.seed(42)
+k <- 5
+km <- kmeans(A_unique, centers = k, nstart = 50)
+kc <- km$cluster
+
+# 8. 定义颜色
+custom_colors <- brewer.pal(k, "Set1")
+
+# 9. 多 perplexity t-SNE
+perplexities <- c(10, 20, 30, 40)
+tsne_results <- list()
+plots <- list()
+
+# 样本名：优先用 rownames(A_unique)（强烈推荐）
+sample_names <- if (!is.null(rownames(A_unique)) && all(rownames(A_unique) != "")) {
+  rownames(A_unique)
+} else {
+  as.character(data_clean[1:nrow(A_unique), 1])
+}
+
+for (p in perplexities) {
+  set.seed(42)
+  tsne_results[[as.character(p)]] <- Rtsne(
+    A_unique,
+    perplexity = p,
+    pca = TRUE,
+    verbose = FALSE,
+    check_duplicates = TRUE
+  )
+
+  # 10. 整理 t-SNE 结果（颜色使用固定的高维聚类 kc）
+  tsne_mat <- tsne_results[[as.character(p)]]$Y
+  tsne_df <- data.frame(
+    Sample  = sample_names,
+    X1      = tsne_mat[, 1],
+    X2      = tsne_mat[, 2],
+    cluster = factor(kc)
+  )
+
+  # 11. ggplot 绘图
+  plots[[as.character(p)]] <- ggplot(tsne_df, aes(X1, X2, color = cluster)) +
+    geom_point(size = 2, alpha = 0.8) +
+    scale_color_manual(values = custom_colors) +
+    ggtitle(paste("t-SNE (colored by high-dim kmeans), perplexity =", p)) +
+    theme_minimal() +
+    theme(axis.title.x = element_blank(),
+          axis.title.y = element_blank())
+}
+
+# 12. 2x2 网格展示
+grid.arrange(grobs = plots, nrow = 2, ncol = 2)
+
+# ======================================================
+# 13. 导出：每个 perplexity × cluster 的“完整数值表”
+#     文件名：perplexity_40_cluster_1_data.csv
+#     内容：Sample + 该簇对应的 A_unique 全部列
+#     注意：方案A下 cluster 固定，按 perplexity 只是复制成 4 套便于管理
+# ======================================================
+
+for (p in perplexities) {
+  for (i in 1:k) {
+    idx <- which(kc == i)
+    if (length(idx) == 0) next
+
+    df_i <- data.frame(
+      Sample = sample_names[idx],
+      A_unique[idx, , drop = FALSE],
+      check.names = FALSE
+    )
+
+    write.csv(
+      df_i,
+      sprintf("perplexity_%s_cluster_%s_data.csv", p, i),
+      row.names = FALSE
+    )
+  }
+}
+
+```
+
+
+
+
+
+```{r}
+# ====== 检验分类效果：Wilks' Λ + PCA投影F检验（一键版） ======
+suppressPackageStartupMessages({
+  library(readxl)
+  library(dplyr)
+  library(tools)
+})
+
+# 读取一个簇文件（CSV或XLSX），并返回：list(data=纯数值矩阵, ids=样本名向量, cols=特征列名)
+.read_cluster_file <- function(path) {
+  ext <- tolower(file_ext(path))
+  if (ext %in% c("csv", "txt")) {
+    df <- read.csv(path, check.names = FALSE)
+  } else if (ext %in% c("xlsx", "xls")) {
+    df <- readxl::read_excel(path) %>% as.data.frame(check.names = FALSE)
+  } else {
+    stop("不支持的文件类型: ", path)
+  }
+  if ("Sample" %in% names(df)) {
+    ids <- df$Sample
+    df <- df[, setdiff(names(df), "Sample"), drop = FALSE]
+  } else {
+    ids <- seq_len(nrow(df))
+  }
+  # 仅保留数值列
+  num_cols <- names(df)[sapply(df, is.numeric)]
+  df <- df[, num_cols, drop = FALSE]
+  X <- as.matrix(df)
+  storage.mode(X) <- "double"
+  list(data = X, ids = ids, cols = colnames(X))
+}
+
+# 给定一个 perplexity P 与簇数 k，自动读取 "perplexity_P_cluster_i_data.*"
+# 并做论文中的 Wilks + 投影F 检验
+run_cluster_tests <- function(perplexity, k, dir = ".",
+                              ridge = 1e-8,  # 用于det稳定（必要时对SSW/SST加λI）
+                              verbose = TRUE) {
+
+  # 1) 读入所有簇
+  files_found <- c()
+  mats <- list()
+  ns <- integer(k)
+  for (i in 1:k) {
+    # 优先CSV，再XLSX
+    cand_csv  <- file.path(dir, sprintf("perplexity_%s_cluster_%s_data.csv",  perplexity, i))
+    cand_xlsx <- file.path(dir, sprintf("perplexity_%s_cluster_%s_data.xlsx", perplexity, i))
+    path <- if (file.exists(cand_csv)) cand_csv else if (file.exists(cand_xlsx)) cand_xlsx else NA
+    if (is.na(path)) stop("未找到文件：", cand_csv, " 或 ", cand_xlsx)
+
+    cf <- .read_cluster_file(path)
+    files_found[i] <- path
+    mats[[i]] <- cf
+    ns[i] <- nrow(cf$data)
+  }
+  if (verbose) message("读取到文件：\n", paste(files_found, collapse = "\n"))
+
+  # 2) 对齐列：使用所有簇共同的特征列，并按相同顺序排列
+  common_cols <- Reduce(intersect, lapply(mats, function(x) x$cols))
+  if (length(common_cols) == 0) stop("各簇之间没有共同的数值列，请检查数据。")
+  mats <- lapply(mats, function(x) {
+    X <- x$data[, common_cols, drop = FALSE]
+    x$data <- X
+    x$cols <- common_cols
+    x
+  })
+
+  # 3) 纵向拼接成 X；记录总 n、p、k
+  A_list <- lapply(mats, function(x) x$data)
+  X <- do.call(rbind, A_list)              # n × p
+  n_vec <- ns
+  n <- sum(n_vec)
+  p <- ncol(X); k <- length(A_list)
+
+  if (n <= 2 || p < 1) stop("样本量或维度不合理。n=", n, ", p=", p)
+  if (verbose) message(sprintf("n=%d, p=%d, k=%d", n, p, k))
+
+  # ========== Wilks' Λ（近似卡方） ==========
+  # 组内离差矩阵 SSW 和 总离差矩阵 SST
+  # SSW = sum (X_i^T (I - 1/n_i J) X_i)
+  make_center_mat <- function(m) diag(m) - (1/m) * matrix(1, m, m)
+  SSW <- matrix(0, p, p)
+  start <- 1
+  for (i in seq_len(k)) {
+    ni <- n_vec[i]
+    idx <- start:(start + ni - 1)
+    Xi <- X[idx, , drop = FALSE]
+    SSW <- SSW + t(Xi) %*% make_center_mat(ni) %*% Xi
+    start <- start + ni
+  }
+  SST <- t(X) %*% make_center_mat(n) %*% X
+
+  # 数值稳定：如SST或SSW接近奇异，加入极小ridge
+  SSW_r <- SSW + ridge * diag(p)
+  SST_r <- SST + ridge * diag(p)
+
+  # log(det(SSW)/det(SST))；使用 determinant() 更稳健
+  det_SSW <- determinant(SSW_r, logarithm = TRUE)$modulus
+  det_SST <- determinant(SST_r, logarithm = TRUE)$modulus
+  Ls <- as.numeric(det_SSW - det_SST)  # log ratio
+  F5 <- -(n - 1 - (p + k)/2) * Ls
+  pv5 <- pchisq(F5, df = p * (k - 1), lower.tail = FALSE)
+
+  # ========== PCA投影的精确F检验（Läuter思路） ==========
+  # 构造 n × (n-1) 的Helmert矩阵 a（与你给的参考代码一致）
+  a <- matrix(0, nrow = n, ncol = n - 1)
+  for (j in 1:(n - 1)) {
+    a[j + 1, j] <- -j / sqrt((j + 1) * j)
+    for (l in 1:j) a[l, j] <- 1 / sqrt((j + 1) * j)
+  }
+
+  Y <- t(a) %*% X                 # (n-1) × p
+  W <- t(Y) %*% Y / (n - 1)       # p × p
+  E <- eigen(t(W) %*% W)          # p × p
+  D <- E$vectors
+
+  r_max <- min(n - 1, p) - 1
+  if (r_max < 1) stop("r_max < 1，样本量或维度不足以进行投影F检验。")
+
+  r1 <- max(1, floor(r_max / 4))
+  r2 <- max(1, floor(r_max / 3))
+  r3 <- max(1, floor(r_max / 2))
+  r4 <- max(1, floor(3 * r_max / 4))
+
+  f_stat <- c(); p_val <- c(); labels <- c()
+
+  compute_F <- function(r) {
+    V <- Y %*% D[, 1:r, drop = FALSE]    # (n-1) × r
+    J <- matrix(1, nrow = n - 1, ncol = n - 1)
+    H <- t(V) %*% J %*% V / (n - 1)      # r × r（未直接使用，保留结构）
+    G <- t(V) %*% (diag(n - 1) - J / (n - 1)) %*% V  # r × r
+    u <- matrix(1, nrow = n - 1, ncol = 1)
+    Fv <- (n - 1 - r) / ((n - 1) * r) * t(u) %*% V %*% solve(G) %*% t(V) %*% u
+    Fv <- as.numeric(Fv)
+    pv <- pf(Fv, df1 = r, df2 = (n - 1 - r), lower.tail = FALSE)
+    c(Fv, pv)
+  }
+
+  c1 <- compute_F(r1); c2 <- compute_F(r2); c3 <- compute_F(r3); c4 <- compute_F(r4)
+
+  f_stat <- c(c1[1], c2[1], c3[1], c4[1], F5)
+  p_val  <- c(c1[2], c2[2], c3[2], c4[2], pv5)
+  labels <- c(
+    sprintf("Projected F (r=%d)", r1),
+    sprintf("Projected F (r=%d)", r2),
+    sprintf("Projected F (r=%d)", r3),
+    sprintf("Projected F (r=%d)", r4),
+    "Wilks' Λ (chi-square approx)"
+  )
+
+  out <- data.frame(
+    Test = labels,
+    Statistic = round(f_stat, 6),
+    P_value = signif(p_val, 6),
+    stringsAsFactors = FALSE
+  )
+
+  if (verbose) {
+    cat("\n=== 检验结果（perplexity =", perplexity, ", k =", k, ") ===\n")
+    print(out, row.names = FALSE)
+  }
+  invisible(list(table = out,
+                 n = n, p = p, k = k,
+                 r = c(r1 = r1, r2 = r2, r3 = r3, r4 = r4),
+                 files = files_found))
+}
+
+# ====== 使用示例 ======
+# 假设你已导出了如 "perplexity_40_cluster_1_data.csv" ... cluster_5_data.csv
+# 直接调用（把 P 和 k 换成你的实际）：
+#res <- run_cluster_tests(perplexity = 40, k = 5, dir = ".")
+#res$table
+```
+
+```{r}
+# ====== 批处理：循环所有 perplexity，整理成总表 ======
+
+batch_run_tests <- function(perplexities, k, dir = ".", verbose_each = FALSE) {
+  res_list <- list()
+
+  for (P in perplexities) {
+    if (verbose_each) cat("\n>>> 正在处理 perplexity =", P, "...\n")
+    # 调用前面定义好的单次检验函数
+    res <- run_cluster_tests(perplexity = P,
+                             k          = k,
+                             dir        = dir,
+                             verbose    = verbose_each)
+
+    df <- res$table
+    df$Perplexity <- P
+    df$k <- k
+    res_list[[as.character(P)]] <- df
+  }
+
+  all_res <- do.call(rbind, res_list)
+  # 调整一下列顺序看起来更舒服
+  all_res <- all_res[, c("Perplexity", "k", "Test", "Statistic", "P_value")]
+  rownames(all_res) <- NULL
+  all_res
+}
+
+# ====== 使用示例 ======
+# 假设你之前导出的文件名为：
+#   perplexity_10_cluster_1_data.csv ... cluster_5_data.csv
+#   perplexity_20_cluster_1_data.csv ... cluster_5_data.csv
+#   ...
+# 并且 k = 5
+
+perplexities <- c(10, 20, 30, 40)  # 根据你实际导出的 perplexity 改
+k <- 5
+
+all_results <- batch_run_tests(perplexities = perplexities,
+                               k           = k,
+                               dir         = ".",        # 文件所在文件夹
+                               verbose_each = FALSE)     # TRUE 时会逐个打印
+
+# 查看总表
+print(all_results)
+
+# 可选：导出成一个总的结果表
+write.csv(all_results,
+          file = "all_perplexities_projectedF_Wilks_results.csv",
+          row.names = FALSE)
+```
+
+
